@@ -79,7 +79,7 @@ struct scrub_page {
 	u64			logical;
 	u64			physical;
 	u64			physical_for_dev_replace;
-	atomic_t		refs;
+	refcount_t		refs;
 	struct {
 		unsigned int	mirror_num:8;
 		unsigned int	have_csum:1;
@@ -2017,12 +2017,12 @@ static void scrub_block_put(struct scrub_block *sblock)
 
 static void scrub_page_get(struct scrub_page *spage)
 {
-	atomic_inc(&spage->refs);
+	refcount_inc(&spage->refs);
 }
 
 static void scrub_page_put(struct scrub_page *spage)
 {
-	if (atomic_dec_and_test(&spage->refs)) {
+	if (refcount_dec_and_test(&spage->refs)) {
 		if (spage->page)
 			__free_page(spage->page);
 		kfree(spage);
