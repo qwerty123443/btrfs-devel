@@ -108,6 +108,14 @@ struct btrfs_device {
 
 	/* bytes used on the current transaction */
 	u64 commit_bytes_used;
+
+	/*
+	 * hint about where the first possible free dev extent is.
+	 *
+	 * u64(-1) means no hint.
+	 */
+	u64 hint_free_dev_extent;
+
 	/*
 	 * used to manage the device which is resized
 	 *
@@ -570,4 +578,54 @@ bool btrfs_check_rw_degradable(struct btrfs_fs_info *fs_info,
 int btrfs_bg_type_to_factor(u64 flags);
 int btrfs_verify_dev_extents(struct btrfs_fs_info *fs_info);
 
+static inline void btrfs_device_hint_add_free(struct btrfs_device *dev,
+					      u64 start, u64 len)
+{
+	if (dev->disk_total_bytes == 0 || start + len > dev->disk_total_bytes)
+		return;
+	if (len < SZ_16M)
+		return;
+	if (start > dev->hint_free_dev_extent)
+		return;
+	dev->hint_free_dev_extent = start;
+}
+
+static inline void btrfs_device_hint_del_free(struct btrfs_device *dev,
+					      u64 start, u64 len)
+{
+	u64 free_hint = dev->hint_free_dev_extent;
+
+	if (dev->disk_total_bytes == 0 || start + len > dev->disk_total_bytes)
+		return;
+	/*
+	 * |<- to be removed ->|
+	 * 			| free hint
+	 * Not affecting free hint
+	 */
+	if (start + len <= free_hint)
+		return;
+	/*
+	 * |<- to be removed ->|
+	 * 		| free hint
+	 * Or
+	 * 	|<- to be removed ->|
+	 * | free hint
+	 * |<-->| Less than 16M
+	 *
+	 * Move the hint to the range end
+	 */
+	if ((start <= free_hint && start + len > free_hint) ||
+	    (start > free_hint && free_hint - start < SZ_16M)) {
+		dev->hint_free_dev_extent = start + len;
+		return;
+	}
+
+	/*
+	 * 			|<- to be removed ->|
+	 * | free hint
+	 *
+	 * We still have larger than 16M free space, no need to update
+	 * free hint
+	 */
+}
 #endif

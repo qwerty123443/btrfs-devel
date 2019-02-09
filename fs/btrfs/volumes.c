@@ -411,6 +411,7 @@ static struct btrfs_device *__alloc_device(void)
 	btrfs_device_data_ordered_init(dev);
 	INIT_RADIX_TREE(&dev->reada_zones, GFP_NOFS & ~__GFP_DIRECT_RECLAIM);
 	INIT_RADIX_TREE(&dev->reada_extents, GFP_NOFS & ~__GFP_DIRECT_RECLAIM);
+	dev->hint_free_dev_extent = (u64)-1;
 
 	return dev;
 }
@@ -1746,9 +1747,14 @@ int find_free_dev_extent(struct btrfs_trans_handle *trans,
 			 struct btrfs_device *device, u64 num_bytes,
 			 u64 *start, u64 *len)
 {
-	/* FIXME use last free of some kind */
-	return find_free_dev_extent_start(trans->transaction, device,
-					  num_bytes, 0, start, len);
+	u64 search_hint;
+
+	if (device->hint_free_dev_extent == (u64)-1)
+		search_hint = 0;
+	else
+		search_hint = device->hint_free_dev_extent;
+	return find_free_dev_extent_start(trans->transaction, device, num_bytes,
+					  search_hint, start, len);
 }
 
 static int btrfs_free_dev_extent(struct btrfs_trans_handle *trans,
@@ -1804,6 +1810,7 @@ again:
 				      "Failed to remove dev extent item");
 	} else {
 		set_bit(BTRFS_TRANS_HAVE_FREE_BGS, &trans->transaction->flags);
+		btrfs_device_hint_add_free(device, key.offset, *dev_extent_len);
 	}
 out:
 	btrfs_free_path(path);
@@ -1846,6 +1853,7 @@ static int btrfs_alloc_dev_extent(struct btrfs_trans_handle *trans,
 	btrfs_set_dev_extent_chunk_offset(leaf, extent, chunk_offset);
 
 	btrfs_set_dev_extent_length(leaf, extent, num_bytes);
+	btrfs_device_hint_del_free(device, key.offset, num_bytes);
 	btrfs_mark_buffer_dirty(leaf);
 out:
 	btrfs_free_path(path);
@@ -7936,6 +7944,14 @@ int btrfs_verify_dev_extents(struct btrfs_fs_info *fs_info)
 		devid = key.objectid;
 		physical_offset = key.offset;
 
+		/*
+		 * previous device verification is done, update its free dev
+		 * extent hint
+		 */
+		if (device && devid != device->devid)
+			btrfs_device_hint_add_free(device, prev_dev_ext_end,
+				device->disk_total_bytes - prev_dev_ext_end);
+
 		if (!device || devid != device->devid) {
 			device = btrfs_find_device(fs_info->fs_devices, devid,
 						   NULL, NULL, true);
@@ -7964,6 +7980,10 @@ int btrfs_verify_dev_extents(struct btrfs_fs_info *fs_info)
 					    physical_offset, physical_len);
 		if (ret < 0)
 			goto out;
+
+		btrfs_device_hint_add_free(device, prev_dev_ext_end,
+				physical_offset - prev_dev_ext_end);
+
 		prev_devid = devid;
 		prev_dev_ext_end = physical_offset + physical_len;
 
@@ -7975,6 +7995,8 @@ int btrfs_verify_dev_extents(struct btrfs_fs_info *fs_info)
 			break;
 		}
 	}
+	btrfs_device_hint_add_free(device, prev_dev_ext_end,
+			device->disk_total_bytes - prev_dev_ext_end);
 
 	/* Ensure all chunks have corresponding dev extents */
 	ret = verify_chunk_dev_extent_mapping(fs_info);
