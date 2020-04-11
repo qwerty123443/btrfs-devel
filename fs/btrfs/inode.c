@@ -227,7 +227,7 @@ static int insert_inline_extent(struct btrfs_trans_handle *trans,
 			compressed_size -= cur_size;
 		}
 		btrfs_set_file_extent_compression(leaf, ei,
-						  compress_type);
+						  compress_type & 0XF);
 	} else {
 		page = find_get_page(inode->i_mapping,
 				     start >> PAGE_SHIFT);
